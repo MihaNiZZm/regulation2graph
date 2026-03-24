@@ -1,0 +1,66 @@
+[project]
+name = "regulation2graph"
+version = "0.1.0"
+description = "Automatic business process modeling from natural language regulations"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "Mikhail Sartakov", email = "m.sartakov@g.nsu.ru" }
+]
+keywords = ["nlp", "business-process", "graph", "natasha", "russian"]
+
+dependencies = [
+    "natasha>=1.6.0",
+    "networkx>=3.1",
+    "matplotlib>=3.7.1",
+    "neo4j>=5.14.0",
+    "pandas>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0.0",
+]
+
+[project.scripts]
+reg2graph = "regulation2graph.main:main"
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["regulation2graph*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort (сортировка импортов)
+    "UP",  # pyupgrade
+]
+ignore = [
+    "E501",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_ignores = true
+disallow_untyped_defs = true

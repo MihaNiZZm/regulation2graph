@@ -1,8 +1,21 @@
+# Virtual environments
 venv/
+.venv/
+
+# Python
 __pycache__/
 *.pyc
+*.egg-info/
+
+# IDE
 .idea/
 .vscode/
-.env
+
+# OS
 .DS_Store
-ipynb_checkpoints/
+
+# Project specific
+.env
+output/
+mcpserver.log
+*.ipynb_checkpoints/
