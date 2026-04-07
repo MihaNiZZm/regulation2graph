@@ -5,21 +5,40 @@
     python -m regulation2graph.main
     # или после установки пакета:
     reg2graph
+
+Переменные окружения:
+    USE_NEO4J=false          — отключить сохранение в Neo4j
+    NEO4J_URI=bolt://localhost:7687
+    NEO4J_USER=neo4j
+    NEO4J_PASSWORD=your_password
 """
 
-from regulation2graph.core import RuleBasedExtractor
-from regulation2graph.graph import GraphVisualizer
+from regulation2graph.config.settings import get_settings
+from regulation2graph.services import (
+    extract_process,
+    print_results,
+    save_to_neo4j,
+    visualize_process,
+)
 
 
-def main() -> None:
-    """Главная функция - демонстрация работы системы."""
-    # Пример текста регламента
-    text = """
+def load_sample_text() -> str:
+    """Возвращает пример текста регламента.
+
+    В будущем можно загружать из файла или API.
+    """
+    return """
     Менеджер получает заявку от клиента.
     Если заявка корректна, менеджер отправляет её директору.
     Директор подписывает приказ.
     Бухгалтер начисляет премию.
     """
+
+
+def main() -> None:
+    """Главная функция — оркестратор."""
+    settings = get_settings()
+    text = load_sample_text()
 
     print("=" * 60)
     print("Regulation2Graph - Анализатор бизнес-процессов")
@@ -27,21 +46,11 @@ def main() -> None:
     print(f"\nВходной текст:\n{text}")
     print("-" * 60)
 
-    # Извлечение триплетов
-    extractor = RuleBasedExtractor()
-    triplets = extractor.parse_text(text)
-
-    # Вывод результатов
-    print(f"\nИзвлечено {len(triplets)} шагов процесса:\n")
-    for i, t in enumerate(triplets, 1):
-        condition_info = f" [Условие: {t.condition_text}]" if t.has_condition else ""
-        alt_info = " [Альтернатива]" if t.is_alternative else ""
-        print(f"  {i}. {t.actor} → {t.action} → {t.obj}{condition_info}{alt_info}")
-
-    # Визуализация
-    print("\n" + "-" * 60)
-    viz = GraphVisualizer()
-    viz.build_and_show(triplets)
+    # Пайплайн обработки
+    triplets = extract_process(text)
+    print_results(triplets)
+    visualize_process(triplets)
+    save_to_neo4j(triplets, settings)
 
 
 if __name__ == "__main__":
