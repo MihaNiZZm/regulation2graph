@@ -8,6 +8,15 @@ Triplet model - основная единица представления де�
 """
 
 from dataclasses import dataclass, field
+from enum import Enum
+
+
+class GatewayType(Enum):
+    """Тип шлюза (gateway) в BPMN-нотации."""
+
+    EXCLUSIVE = "exclusive"       # XOR — либо одно, либо другое
+    PARALLEL = "parallel"         # AND — одновременно оба
+    INCLUSIVE = "inclusive"       # OR — одно или оба
 
 
 @dataclass(frozen=True)
@@ -41,9 +50,12 @@ class Triplet:
     condition_text: str | None = None
     is_alternative: bool = False
     full_text: str = ""
+    gateway_type: GatewayType | None = None  # Тип шлюза, если есть условие
+    gateway_condition: str | None = None     # Условие для шлюза (дублирует condition_text)
 
     def __post_init__(self) -> None:
-        """Валидация после создания (как @Valid в Spring)."""
+        """Валидация после создания."""
+        object.__setattr__(self, "gateway_condition", self.condition_text)
         if not self.action:
             raise ValueError("Action cannot be empty")
 
@@ -58,19 +70,25 @@ class Triplet:
         return f"{self.actor.upper()}\n{self.action}\n{self.obj}"
 
     def to_dict(self) -> dict:
-        """Конвертация в словарь (для совместимости с legacy кодом)."""
+        """Конвертация в словарь."""
         return {
             "actor": self.actor,
             "action": self.action,
             "object": self.obj,
-            "condition": self.condition_text,  # legacy name
+            "condition": self.condition_text,
             "is_alternative": self.is_alternative,
             "full_text": self.full_text,
+            "gateway_type": self.gateway_type.value if self.gateway_type else None,
+            "gateway_condition": self.gateway_condition,
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> "Triplet":
-        """Создание из словаря (для совместимости с legacy кодом)."""
+        """Создание из словаря."""
+        gateway_type = None
+        if data.get("gateway_type"):
+            gateway_type = GatewayType(data["gateway_type"])
+
         return cls(
             actor=data.get("actor", "Unknown"),
             action=data["action"],
@@ -78,4 +96,6 @@ class Triplet:
             condition_text=data.get("condition"),
             is_alternative=data.get("is_alternative", False),
             full_text=data.get("full_text", ""),
+            gateway_type=gateway_type,
+            gateway_condition=data.get("gateway_condition"),
         )

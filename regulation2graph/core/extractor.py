@@ -12,7 +12,7 @@ from natasha import (
 )
 
 from regulation2graph.config import get_settings
-from regulation2graph.models import Triplet
+from regulation2graph.models import GatewayType, Triplet
 
 
 class RuleBasedExtractor:
@@ -108,6 +108,11 @@ class RuleBasedExtractor:
         # 5. Проверяем маркер альтернативы
         is_alternative = self._is_alternative_branch(sent)
 
+        # 6. Определяем тип шлюза
+        gateway_type = None
+        if condition_text:
+            gateway_type = GatewayType.EXCLUSIVE
+
         return Triplet(
             actor=actor,
             action=action_token.lemma,
@@ -115,6 +120,7 @@ class RuleBasedExtractor:
             condition_text=condition_text,
             is_alternative=is_alternative,
             full_text=sent.text.strip(),
+            gateway_type=gateway_type,
         )
 
     def _extract_condition(self, sent, action_token) -> str | None:

@@ -1,5 +1,5 @@
 """Data models for regulation2graph."""
 
-from regulation2graph.models.triplet import Triplet
+from regulation2graph.models.triplet import GatewayType, Triplet
 
-__all__ = ["Triplet"]
+__all__ = ["Triplet", "GatewayType"]

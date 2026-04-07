@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 import networkx as nx
 
 from regulation2graph.config import get_settings
-from regulation2graph.models import Triplet
+from regulation2graph.models import GatewayType, Triplet
 
 
 class GraphVisualizer:
@@ -52,99 +52,117 @@ class GraphVisualizer:
 
     def _build_graph(self, triplets: list[Triplet]) -> nx.MultiDiGraph:
         """
-        Строит NetworkX MultiDiGraph из списка триплетов с поддержкой ветвления.
+        Строит NetworkX MultiDiGraph из списка триплетов с Gateway-узлами.
 
-        Используем MultiDiGraph для поддержки параллельных рёбер
-        (например, когда "Да" и "Нет" ведут к одному узлу).
-
-        Логика ветвления:
-        - Узел с условием имеет 2 исходящих ребра: "Да" и "Нет"
-        - "Да" ведёт к следующему не-альтернативному узлу
-        - "Нет" ведёт к альтернативе или к "Конец процесса"
-        - Альтернативная ветка сливается с основной
+        Логика:
+        - Обычный триплет: узел события, связь NEXT к следующему
+        - Триплет с условием: создаётся Gateway-узел
+          (Event)-[:LEADS_TO]->(Gateway)-[:IF_TRUE]->(Next)
+          (Gateway)-[:IF_FALSE]->(Alternative | End)
         """
         graph = nx.MultiDiGraph()
 
         if not triplets:
             return graph
 
-        # Константа для терминального узла
         end_node = "Конец процесса"
 
-        # 1. Создаём имена узлов для всех триплетов
-        node_names = [f"{i + 1}. {t.display_name}" for i, t in enumerate(triplets)]
+        # Создаём имена узлов для событий
+        event_names = [f"{i + 1}. {t.display_name}" for i, t in enumerate(triplets)]
 
-        # 2. Добавляем все узлы триплетов
+        # Добавляем узлы событий
         for i, triplet in enumerate(triplets):
             graph.add_node(
-                node_names[i],
+                event_names[i],
+                node_type="event",
                 triplet=triplet,
-                has_condition=triplet.has_condition,
                 is_alternative=triplet.is_alternative,
             )
 
-        # 3. Определяем, нужен ли терминальный узел
-        needs_end_node = self._needs_end_node(triplets)
-        if needs_end_node:
-            graph.add_node(end_node, is_end=True)
+        # Определяем, нужен ли терминальный узел
+        needs_end = any(t.has_condition for t in triplets)
+        if needs_end:
+            graph.add_node(end_node, node_type="end", is_end=True)
 
-        # 4. Строим рёбра с учётом ветвления
-        i = 0
-        while i < len(triplets):
-            triplet = triplets[i]
-            current_node = node_names[i]
+        # Строим рёбра
+        pending_gateway_idx = None  # Индекс события со шлюзом, ждущим подключения
 
+        for i, triplet in enumerate(triplets):
+            current_event = event_names[i]
+
+            # Если есть незавершённый шлюз — подключаем его
+            if pending_gateway_idx is not None:
+                gateway_condition = triplets[pending_gateway_idx].condition_text
+                gateway_label = f"◇ {gateway_condition}"
+
+                # Находим следующий не-альтернативный для IF_TRUE
+                next_regular = self._find_next_regular(triplets, pending_gateway_idx)
+                # Находим альтернативу для IF_FALSE
+                next_alt = self._find_next_alternative(triplets, pending_gateway_idx)
+
+                if next_regular is not None:
+                    graph.add_edge(
+                        gateway_label, event_names[next_regular],
+                        label="Да", relation="IF_TRUE",
+                    )
+                else:
+                    graph.add_edge(
+                        gateway_label, end_node,
+                        label="Да", relation="IF_TRUE",
+                    )
+
+                if next_alt is not None:
+                    graph.add_edge(
+                        gateway_label, event_names[next_alt],
+                        label="Нет", relation="IF_FALSE",
+                    )
+                else:
+                    graph.add_edge(
+                        gateway_label, end_node,
+                        label="Нет", relation="IF_FALSE",
+                    )
+
+                pending_gateway_idx = None
+
+            # Если текущий триплет имеет условие — создаём Gateway
             if triplet.has_condition:
-                # Узел с условием - нужно ветвление
-                next_regular_idx = self._find_next_regular(triplets, i)
-                next_alternative_idx = self._find_next_alternative(triplets, i)
+                gateway_condition = triplet.condition_text
+                gateway_label = f"◇ {gateway_condition}"
 
-                # Ребро "Да" → следующий не-альтернативный узел
-                if next_regular_idx is not None:
-                    graph.add_edge(current_node, node_names[next_regular_idx], label="Да")
-                else:
-                    graph.add_edge(current_node, end_node, label="Да")
+                graph.add_node(
+                    gateway_label,
+                    node_type="gateway",
+                    condition=gateway_condition,
+                    gateway_type=triplet.gateway_type,
+                )
 
-                # Ребро "Нет" → альтернатива или "Конец процесса"
-                if next_alternative_idx is not None:
-                    graph.add_edge(current_node, node_names[next_alternative_idx], label="Нет")
-                else:
-                    graph.add_edge(current_node, end_node, label="Нет")
+                # Связь Event → Gateway
+                graph.add_edge(current_event, gateway_label, label="", relation="LEADS_TO")
+
+                # Запоминаем, что шлюз ждёт подключения
+                pending_gateway_idx = i
 
             elif triplet.is_alternative:
-                # Альтернативная ветка - соединяем с точкой слияния
-                merge_point_idx = self._find_merge_point(triplets, i)
-                if merge_point_idx is not None:
-                    graph.add_edge(current_node, node_names[merge_point_idx], label="")
+                # Альтернативная ветка — будет подключена к шлюзу выше
+                merge_point = self._find_merge_point(triplets, i)
+                if merge_point is not None:
+                    graph.add_edge(current_event, event_names[merge_point], label="")
                 else:
-                    graph.add_edge(current_node, end_node, label="")
+                    graph.add_edge(current_event, end_node, label="")
 
             else:
-                # Обычный узел - соединяем со следующим
+                # Обычный триплет — связываем со следующим
                 if i + 1 < len(triplets):
-                    next_triplet = triplets[i + 1]
-                    # Пропускаем альтернативы (они уже подключены к условию)
-                    if not next_triplet.is_alternative:
-                        graph.add_edge(current_node, node_names[i + 1], label="")
-                    else:
-                        # Ищем следующий не-альтернативный
+                    next_t = triplets[i + 1]
+                    if next_t.is_alternative:
+                        # Пропускаем альтернативу, ищем regular
                         next_regular = self._find_next_regular(triplets, i)
                         if next_regular is not None:
-                            graph.add_edge(current_node, node_names[next_regular], label="")
-
-            i += 1
+                            graph.add_edge(current_event, event_names[next_regular], label="")
+                    else:
+                        graph.add_edge(current_event, event_names[i + 1], label="")
 
         return graph
-
-    def _needs_end_node(self, triplets: list[Triplet]) -> bool:
-        """Проверяет, нужен ли терминальный узел."""
-        for i, triplet in enumerate(triplets):
-            if triplet.has_condition:
-                # Есть ли альтернатива для этого условия?
-                next_alt = self._find_next_alternative(triplets, i)
-                if next_alt is None:
-                    return True
-        return False
 
     def _find_next_regular(self, triplets: list[Triplet], current_idx: int) -> int | None:
         """Находит индекс следующего не-альтернативного триплета."""
@@ -185,14 +203,16 @@ class GraphVisualizer:
 
         # Цвета узлов в зависимости от типа
         node_colors = []
+        node_shapes = []  # Для будущих улучшений
         for node in graph.nodes:
             data = graph.nodes[node]
-            if data.get("is_end"):
+            node_type = data.get("node_type", "event")
+            if node_type == "end":
                 node_colors.append(self._settings.end_node_color)
+            elif node_type == "gateway":
+                node_colors.append("orange")  # Gateway — ромб
             elif data.get("is_alternative"):
                 node_colors.append("lightgreen")  # Альтернативная ветка
-            elif data.get("has_condition"):
-                node_colors.append(self._settings.condition_node_color)
             else:
                 node_colors.append(self._settings.node_color)
 
