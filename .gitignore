@@ -19,3 +19,4 @@ __pycache__/
 output/
 mcpserver.log
 *.ipynb_checkpoints/
+.claude/

@@ -31,7 +31,7 @@
 | Язык | Python 3.10+ | ✅ Используется |
 | NLP | Natasha (токенизация, морфология, синтаксис) | ✅ Используется |
 | Визуализация | NetworkX + Matplotlib | ✅ Используется |
-| Графовая БД | Neo4j | ⏳ Настроен, не интегрирован |
+| Графовая БД | Neo4j | ✅ Интегрирован (Docker + Decision-узлы) |
 | Тестирование | pytest | ✅ Настроено |
 | Линтер | ruff | ✅ Настроено |
 | Типизация | mypy | ✅ Настроено |
@@ -46,12 +46,11 @@
 regulation2graph/
 ├── pyproject.toml                    # Конфигурация проекта (как build.gradle.kts)
 ├── README.md
-├── .claude/
-│   └── CLAUDE.md                     # Документация проекта
+├── docker-compose.yml                # Neo4j контейнер
 │
 ├── regulation2graph/                 # Основной пакет
 │   ├── __init__.py                   # Экспорт публичного API
-│   ├── main.py                       # Точка входа
+│   ├── main.py                       # Точка входа (тонкий orchestrator)
 │   │
 │   ├── core/                         # Бизнес-логика (как @Service)
 │   │   ├── __init__.py
@@ -59,15 +58,22 @@ regulation2graph/
 │   │
 │   ├── graph/                        # Работа с графами
 │   │   ├── __init__.py
-│   │   └── visualizer.py             # GraphVisualizer
+│   │   ├── visualizer.py             # GraphVisualizer (с Gateway-узлами)
+│   │   └── neo4j.py                  # Neo4jLoader (Decision-узлы)
 │   │
 │   ├── models/                       # Dataclasses (как DTO/Entity)
 │   │   ├── __init__.py
-│   │   └── triplet.py                # Triplet model
+│   │   └── triplet.py                # Triplet + GatewayType
 │   │
-│   └── config/                       # Конфигурация (как application.yml)
+│   ├── config/                       # Конфигурация (как application.yml)
+│   │   ├── __init__.py
+│   │   └── settings.py               # Settings dataclass
+│   │
+│   └── services/                     # Сервисы (бизнес-логика)
 │       ├── __init__.py
-│       └── settings.py               # Settings dataclass
+│       ├── extraction_service.py     # extract_process(), print_results()
+│       ├── visualization_service.py  # visualize_process()
+│       └── neo4j_service.py          # save_to_neo4j()
 │
 ├── tests/                            # Тесты ОТДЕЛЬНО от кода
 │   ├── __init__.py
@@ -76,7 +82,9 @@ regulation2graph/
 │   └── benchmarks/
 │       └── test_benchmark.py         # Бенчмарк качества
 │
-└── data/                             # Данные для тестов
+└── data/                             # Данные и документация
+    ├── documents/
+    │   └── PROJECT_DESCRIPTION.md    # Документация проекта
     └── examples/
         └── sample_regulation.txt
 ```
@@ -105,12 +113,15 @@ regulation2graph/
 - Лемматизация через Natasha MorphVocab
 - Извлечение текста условия через `advcl` (adverbial clause)
 - Детекция маркеров альтернативы: `иначе`, `в противном случае`
+- **Присвоение `GatewayType.EXCLUSIVE`** триплетам с условием
 
 ### 2. Triplet Model (`regulation2graph/models/triplet.py`)
 - Иммутабельный dataclass (`frozen=True`)
 - Валидация в `__post_init__`
 - Методы `to_dict()` / `from_dict()` для совместимости
 - Properties: `has_condition`, `display_name`
+- **`GatewayType` enum:** EXCLUSIVE, PARALLEL, INCLUSIVE
+- **Поля:** `gateway_type`, `gateway_condition`
 
 ### 3. Settings (`regulation2graph/config/settings.py`)
 - Централизованная конфигурация (маркеры условий, Neo4j, визуализация)
@@ -119,13 +130,32 @@ regulation2graph/
 
 ### 4. GraphVisualizer (`regulation2graph/graph/visualizer.py`)
 - Построение NetworkX MultiDiGraph из триплетов
-- **Логическое ветвление:** узел с условием → 2 исходящих ребра ("Да"/"Нет")
+- **Gateway-узлы (Decision-узлы):** отдельный узел `◇ {condition}` для каждого условия
+- **Логическое ветвление:** `(Event)-[:LEADS_TO]->(Gateway)-[:IF_TRUE]->(Next)` и `(Gateway)-[:IF_FALSE]->(Alternative | End)`
 - Узел "Конец процесса" для условий без альтернативы
 - Слияние альтернативных веток с основным потоком
-- Цветовая маркировка узлов (обычный/условный/альтернативный/терминальный)
+- Цветовая маркировка: обычный/условный (gateway)/альтернативный/терминальный
 - Сохранение в PNG
 
-### 5. Тесты (`tests/`)
+### 5. Neo4j Integration (`regulation2graph/graph/neo4j.py`)
+- **`Neo4jLoader`** — загрузка графа в Neo4j через Docker
+- **Схема данных:**
+  - `(:Actor)-[:PERFORMS]->(:Event)`
+  - `(:Event)-[:NEXT]->(:Event)` — обычная очередность
+  - `(:Event)-[:LEADS_TO]->(:Gateway)` — связь с Decision-узлом
+  - `(:Gateway)-[:IF_TRUE]->(:Event)` — ветка "условие выполнено"
+  - `(:Gateway)-[:IF_FALSE]->(:Event | End)` — ветка "условие не выполнено"
+- **Gateway-узел** хранит: `type`, `condition`, `uid`
+- Автоматическая очистка БД перед загрузкой
+- Docker Compose для быстрого запуска (`docker-compose.yml`)
+
+### 6. Services Layer (`regulation2graph/services/`)
+- **extraction_service.py:** `extract_process()`, `print_results()`
+- **visualization_service.py:** `visualize_process()`
+- **neo4j_service.py:** `save_to_neo4j()` с проверкой `USE_NEO4J` env var
+- **main.py** — тонкий orchestrator, вызывает сервисы
+
+### 7. Тесты (`tests/`)
 - Unit-тесты для Triplet и RuleBasedExtractor
 - Тесты для GraphVisualizer с логикой ветвления
 - Бенчмарк по 3 категориям: Simple, Medium, Hard
@@ -140,7 +170,8 @@ regulation2graph/
 - ❌ Безличные конструкции ("Необходимо согласовать бюджет")
 - ❌ Объединение одинаковых сущностей (один актор = один узел)
 - ❌ Синонимы (менеджер = руководитель)
-- ❌ Интеграция с Neo4j
+- ❌ Вложенные условия ("если X, и если Y, то Z")
+- ❌ Загрузка регламентов из файлов (только хардкод в main.py)
 
 ---
 
@@ -150,15 +181,24 @@ regulation2graph/
 
 **Принятые решения:**
 
-1. **Слияние веток:** После условной и альтернативной ветки обе сливаются к следующему общему шагу.
+1. **Gateway-узлы (Decision-узлы):** Для каждого условия создаётся отдельный узел типа `Gateway`.
+   ```
+   [Event]--[:LEADS_TO]-->[Gateway {condition: "..."}]
+                              |--[:IF_TRUE]--> [Event (condition met)]
+                              |--[:IF_FALSE]--> [Event (condition not met) | End]
+   ```
+
+2. **Слияние веток:** После условной и альтернативной ветки обе сливаются к следующему общему шагу.
    ```
    [Условие] --Да--> [Действие A] ---> [Общий шаг]
              --Нет--> [Действие B] -/
    ```
 
-2. **Привязка "иначе":** Маркер альтернативы ("иначе", "в противном случае") относится к **последнему** условию в тексте.
+3. **Привязка "иначе":** Маркер альтернативы ("иначе", "в противном случае") относится к **последнему** условию в тексте.
 
-3. **Терминальный узел:** Один узел "Конец процесса" на весь граф. Используется когда условие не имеет явной альтернативы.
+4. **Терминальный узел:** Один узел "Конец процесса" на весь граф. Используется когда условие не имеет явной альтернативы.
+
+5. **Типы Gateway:** `EXCLUSIVE` (XOR — либо одно, либо другое), `PARALLEL` (AND), `INCLUSIVE` (OR). Сейчас поддерживается только EXCLUSIVE.
 
 **Пример:**
 ```
@@ -169,10 +209,18 @@ regulation2graph/
               --Нет--> [возвращает] --> [утверждает]
 ```
 
+**Neo4j модель:**
+```cypher
+(Event)-[:LEADS_TO]->(Gateway {type: "exclusive", condition: "документ согласован"})
+(Gateway)-[:IF_TRUE]->(NextEvent)
+(Gateway)-[:IF_FALSE]->(AlternativeEvent)
+```
+
 **Потенциальные улучшения (TODO):**
 - [ ] Режим привязки "иначе" к первому условию (альтернативная стратегия)
 - [ ] Вложенные условия ("если X, и если Y, то Z")
 - [ ] Несколько терминальных узлов для разных сценариев завершения
+- [ ] Поддержка PARALLEL и INCLUSIVE шлюзов
 
 ---
 
@@ -249,16 +297,42 @@ regulation2graph/
 3. Связывание повторных упоминаний с существующими узлами
 4. Визуализация: один актор участвует в нескольких действиях
 
-### Фаза 5: Интеграция с Neo4j
+### Фаза 5: Интеграция с Neo4j ✅ ЗАВЕРШЕНО
 
-**Цель:** Хранить граф в Neo4j для запросов и анализа.
+**Цель:** ~~Хранить граф в Neo4j для запросов и анализа.~~
 
-**Задачи:**
-1. Создать модуль `regulation2graph/graph/neo4j_storage.py`
-2. Схема данных: `(:Actor)-[:PERFORMS]->(:Action)-[:ON]->(:Object)`
-3. Связи очередности: `(:Action)-[:NEXT]->(:Action)`
-4. Условные связи: `(:Action)-[:IF {condition: "..."}]->(:Action)`
-5. CRUD-операции и очистка базы
+**Реализовано:**
+1. ✅ Создан модуль `regulation2graph/graph/neo4j.py` — `Neo4jLoader`
+2. ✅ Схема данных с Gateway-узлами:
+   - `(:Actor)-[:PERFORMS]->(:Event)`
+   - `(:Event)-[:NEXT]->(:Event)` — обычная очередность
+   - `(:Event)-[:LEADS_TO]->(:Gateway)` — связь с Decision-узлом
+   - `(:Gateway)-[:IF_TRUE]->(:Event)` — ветка "условие выполнено"
+   - `(:Gateway)-[:IF_FALSE]->(:Event | End)` — ветка "условие не выполнено"
+3. ✅ Gateway-узел хранит: `type`, `condition`, `uid`
+4. ✅ Автоматическая очистка БД перед загрузкой
+5. ✅ Docker Compose для быстрого запуска (`docker-compose.yml`)
+6. ✅ Переменная окружения `USE_NEO4J` для вкл/выкл сохранения
+
+**Как запустить:**
+```bash
+docker-compose up -d        # Запустить Neo4j
+python -m regulation2graph.main  # Запустить приложение
+```
+
+**Neo4j Browser:** http://localhost:7474 (логин: neo4j, пароль: password)
+
+**Полезные запросы:**
+```cypher
+-- Посмотреть весь граф
+MATCH path = (n)-[r]->(m) RETURN path
+
+-- Показать цепочку событий
+MATCH path = (:Actor)-[:PERFORMS]->(:Event)-[:NEXT*]->() RETURN path
+
+-- Показать ветвления
+MATCH path = (:Event)-[:LEADS_TO]->(:Gateway)-[:IF_TRUE|IF_FALSE]->() RETURN path
+```
 
 ### Фаза 6: Работа с синонимами (Эмбеддинги)
 
@@ -366,10 +440,13 @@ mypy regulation2graph/
 ## Переменные окружения
 
 ```bash
-# Neo4j (опционально)
+# Neo4j
 export NEO4J_URI="bolt://localhost:7687"
 export NEO4J_USER="neo4j"
 export NEO4J_PASSWORD="password"
+
+# Включить/выключить сохранение в Neo4j
+export USE_NEO4J="true"  # или "false"
 
 # Debug mode
 export DEBUG="true"
@@ -385,3 +462,6 @@ export DEBUG="true"
 - Настройки (`get_settings()`) кэшируются, изменения требуют перезапуска
 - Визуализатор использует бэкенд Agg (без GUI) - только сохранение в файл
 - Граф сохраняется в `output/process_graph.png` по умолчанию
+- **Gateway-узлы** в визуализации: оранжевые узлы с `◇ {condition}`
+- **Neo4j** запускается через `docker-compose up -d`
+- `main.py` — тонкий orchestrator, вся логика в `services/`
