@@ -8,7 +8,7 @@ Unit-тесты для RuleBasedExtractor.
 import pytest
 
 from regulation2graph.core import RuleBasedExtractor
-from regulation2graph.models import Triplet
+from regulation2graph.models import Triplet, WorkflowNet, PlaceType
 
 
 class TestSimpleSentences:
@@ -119,3 +119,72 @@ class TestTripletModel:
         """Действие обязательно."""
         with pytest.raises(ValueError, match="Action cannot be empty"):
             Triplet(actor="менеджер", action="", obj="заявка")
+
+
+class TestWorkflowNetExtraction:
+    """Тесты нового метода extract() для WorkflowNet."""
+
+    def test_extract_returns_workflow_net(self, extractor: RuleBasedExtractor) -> None:
+        """extract() возвращает WorkflowNet."""
+        workflow = extractor.extract("Менеджер проверяет заявку.")
+        assert isinstance(workflow, WorkflowNet)
+
+    def test_extract_simple_has_start_and_end(self, extractor: RuleBasedExtractor) -> None:
+        """WorkflowNet имеет начальное и конечное места."""
+        workflow = extractor.extract("Менеджер проверяет заявку.")
+        assert workflow.start_place is not None
+        assert workflow.start_place.place_type == PlaceType.START
+        assert workflow.end_place is not None
+        assert workflow.end_place.place_type == PlaceType.END
+
+    def test_extract_simple_creates_transitions(self, extractor: RuleBasedExtractor) -> None:
+        """Извлекаются Transitions из предложений."""
+        workflow = extractor.extract("Менеджер проверяет заявку. Директор подписывает документ.")
+        assert len(workflow.transitions) == 2
+        assert workflow.transitions[0].actor == "менеджер"
+        assert workflow.transitions[1].actor == "директор"
+
+    def test_extract_creates_intermediate_places(self, extractor: RuleBasedExtractor) -> None:
+        """Создаются промежуточные Places между Transitions."""
+        workflow = extractor.extract("Менеджер проверяет. Директор подписывает.")
+        # start + 2 intermediate + end = 4 places
+        assert len(workflow.places) >= 4
+
+    def test_extract_creates_arcs(self, extractor: RuleBasedExtractor) -> None:
+        """Создаются Arcs между Places и Transitions."""
+        workflow = extractor.extract("Менеджер проверяет заявку.")
+        # p_start -> t0 -> p1 -> p_end = минимум 3 arcs
+        assert len(workflow.arcs) >= 3
+
+    def test_extract_condition_creates_guard(self, extractor: RuleBasedExtractor) -> None:
+        """Условие в тексте создаёт guard на Transition."""
+        workflow = extractor.extract("Если документ согласован, менеджер подписывает договор.")
+        assert len(workflow.transitions) == 1
+        assert workflow.transitions[0].has_guard is True
+        assert workflow.transitions[0].guard is not None
+
+    def test_extract_condition_creates_labeled_arcs(self, extractor: RuleBasedExtractor) -> None:
+        """Условие создаёт дуги с метками 'Да'/'Нет'."""
+        workflow = extractor.extract("Если документ согласован, менеджер подписывает договор.")
+        labels = [arc.label for arc in workflow.arcs if arc.label]
+        assert "Да" in labels
+        # "Нет" тоже должен быть (к p_end, если нет альтернативы)
+        assert "Нет" in labels
+
+    def test_extract_with_alternative_branch(self, extractor: RuleBasedExtractor) -> None:
+        """Альтернативная ветка корректно обрабатывается."""
+        workflow = extractor.extract(
+            "Если документ согласован, менеджер подписывает. "
+            "Иначе секретарь возвращает."
+        )
+        assert len(workflow.transitions) == 2
+        labels = [arc.label for arc in workflow.arcs if arc.label]
+        assert "Да" in labels
+        assert "Нет" in labels
+
+    def test_extract_empty_text(self, extractor: RuleBasedExtractor) -> None:
+        """Пустой текст возвращает минимальный WorkflowNet."""
+        workflow = extractor.extract("")
+        assert workflow.start_place is not None
+        assert workflow.end_place is not None
+        assert len(workflow.transitions) == 0

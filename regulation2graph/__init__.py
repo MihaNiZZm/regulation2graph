@@ -2,23 +2,40 @@
 Regulation2Graph - автоматическое моделирование бизнес-процессов из текстов регламентов.
 
 Основные компоненты:
-- RuleBasedExtractor: Извлечение триплетов из текста
-- GraphVisualizer: Визуализация графа процесса
-- Triplet: Модель данных для представления действия
+- RuleBasedExtractor: Извлечение WorkflowNet из текста
+- WorkflowNet: Модель бизнес-процесса (Petri Net)
+- Neo4jLoader: Сохранение в графовую БД
 
 Example:
-    >>> from regulation2graph import RuleBasedExtractor, GraphVisualizer
+    >>> from regulation2graph import RuleBasedExtractor
     >>>
     >>> extractor = RuleBasedExtractor()
-    >>> triplets = extractor.parse_text("Менеджер проверяет заявку.")
-    >>>
-    >>> viz = GraphVisualizer()
-    >>> viz.build_and_show(triplets)
+    >>> workflow = extractor.extract("Менеджер проверяет заявку.")
+    >>> print(workflow.transitions[0].actor)
+    'менеджер'
 """
 
 from regulation2graph.core import RuleBasedExtractor
-from regulation2graph.graph import GraphVisualizer
-from regulation2graph.models import Triplet
+from regulation2graph.graph import Neo4jLoader
+from regulation2graph.models import (
+    Arc,
+    Place,
+    PlaceType,
+    Transition,
+    TransitionType,
+    Triplet,
+    WorkflowNet,
+)
 
-__version__ = "0.1.0"
-__all__ = ["RuleBasedExtractor", "GraphVisualizer", "Triplet"]
+__version__ = "0.2.0"
+__all__ = [
+    "RuleBasedExtractor",
+    "Neo4jLoader",
+    "WorkflowNet",
+    "Place",
+    "PlaceType",
+    "Transition",
+    "TransitionType",
+    "Arc",
+    "Triplet",  # Legacy
+]

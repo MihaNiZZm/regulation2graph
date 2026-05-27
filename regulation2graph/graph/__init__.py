@@ -1,6 +1,5 @@
-"""Graph visualization and Neo4j integration."""
+"""Neo4j integration for Workflow Net storage."""
 
 from regulation2graph.graph.neo4j import Neo4jLoader
-from regulation2graph.graph.visualizer import GraphVisualizer
 
-__all__ = ["GraphVisualizer", "Neo4jLoader"]
+__all__ = ["Neo4jLoader"]

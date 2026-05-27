@@ -1,5 +1,8 @@
 """
-Rule-based извлечение триплетов из текста.
+Rule-based извлечение Workflow Net из текста.
+
+Извлекает действия (Transitions) из текста и строит
+полную модель Workflow Net с Places и Arcs.
 """
 
 from natasha import (
@@ -12,12 +15,20 @@ from natasha import (
 )
 
 from regulation2graph.config import get_settings
+from regulation2graph.models import (
+    Arc,
+    Place,
+    PlaceType,
+    Transition,
+    WorkflowNet,
+)
+# Legacy import для обратной совместимости
 from regulation2graph.models import GatewayType, Triplet
 
 
 class RuleBasedExtractor:
     """
-    Извлекает триплеты (Субъект-Действие-Объект) из текста на русском языке.
+    Извлекает Workflow Net из текста на русском языке.
 
     Использует библиотеку Natasha для:
     - Сегментации текста на предложения
@@ -26,8 +37,8 @@ class RuleBasedExtractor:
 
     Example:
         >>> extractor = RuleBasedExtractor()
-        >>> triplets = extractor.parse_text("Менеджер проверяет заявку.")
-        >>> print(triplets[0].actor)
+        >>> workflow = extractor.extract("Менеджер проверяет заявку.")
+        >>> print(workflow.transitions[0].actor)
         'менеджер'
     """
 
@@ -42,43 +53,76 @@ class RuleBasedExtractor:
         self._morph_tagger = NewsMorphTagger(self._embedding)
         self._syntax_parser = NewsSyntaxParser(self._embedding)
 
-    def parse_text(self, text: str) -> list[Triplet]:
+    def extract(self, text: str) -> WorkflowNet:
         """
-        Разбирает текст и извлекает список триплетов.
+        Извлекает Workflow Net из текста.
 
         Args:
             text: Текст регламента на русском языке.
 
         Returns:
-            Список извлечённых триплетов.
+            WorkflowNet с Places, Transitions и Arcs.
+        """
+        # Извлекаем сырые данные о действиях
+        raw_actions = self._extract_raw_actions(text)
+
+        # Строим Workflow Net
+        return self._build_workflow_net(raw_actions)
+
+    def parse_text(self, text: str) -> list[Triplet]:
+        """
+        DEPRECATED: Используйте extract() вместо этого метода.
+
+        Оставлен для обратной совместимости.
+        """
+        workflow = self.extract(text)
+        # Конвертируем Transitions обратно в Triplets для совместимости
+        return [
+            Triplet(
+                actor=t.actor,
+                action=t.action,
+                obj=t.obj,
+                condition_text=t.guard,
+                is_alternative=getattr(t, '_is_alternative', False),
+                full_text=t.full_text,
+                gateway_type=GatewayType.EXCLUSIVE if t.has_guard else None,
+            )
+            for t in workflow.transitions
+        ]
+
+    def _extract_raw_actions(self, text: str) -> list[dict]:
+        """
+        Извлекает сырые данные о действиях из текста.
+
+        Returns:
+            Список словарей с данными о действиях.
         """
         doc = Doc(text)
         doc.segment(self._segmenter)
         doc.tag_morph(self._morph_tagger)
         doc.parse_syntax(self._syntax_parser)
 
-        results: list[Triplet] = []
+        results = []
 
         for sent in doc.sents:
-            # Лемматизация всех токенов
             for token in sent.tokens:
                 token.lemmatize(self._morph_vocab)
 
-            triplet = self._extract_from_sentence(sent)
-            if triplet:
-                results.append(triplet)
+            action_data = self._extract_action_from_sentence(sent)
+            if action_data:
+                results.append(action_data)
 
         return results
 
-    def _extract_from_sentence(self, sent) -> Triplet | None:
+    def _extract_action_from_sentence(self, sent) -> dict | None:
         """
-        Извлекает триплет из одного предложения.
+        Извлекает данные о действии из одного предложения.
 
         Args:
             sent: Предложение из Natasha Doc.
 
         Returns:
-            Triplet или None если не удалось извлечь.
+            Словарь с данными о действии или None.
         """
         nlp_settings = self._settings.nlp
 
@@ -102,26 +146,132 @@ class RuleBasedExtractor:
                 obj = token.lemma
                 break
 
-        # 4. Проверяем условие (простая проверка по первому слову)
-        condition_text = self._extract_condition(sent, action_token)
+        # 4. Извлекаем условие (guard для Transition)
+        guard = self._extract_condition(sent, action_token)
 
         # 5. Проверяем маркер альтернативы
         is_alternative = self._is_alternative_branch(sent)
 
-        # 6. Определяем тип шлюза
-        gateway_type = None
-        if condition_text:
-            gateway_type = GatewayType.EXCLUSIVE
+        return {
+            "actor": actor,
+            "action": action_token.lemma,
+            "obj": obj,
+            "guard": guard,
+            "is_alternative": is_alternative,
+            "full_text": sent.text.strip(),
+        }
 
-        return Triplet(
-            actor=actor,
-            action=action_token.lemma,
-            obj=obj,
-            condition_text=condition_text,
-            is_alternative=is_alternative,
-            full_text=sent.text.strip(),
-            gateway_type=gateway_type,
-        )
+    def _build_workflow_net(self, raw_actions: list[dict]) -> WorkflowNet:
+        """
+        Строит WorkflowNet из списка сырых действий.
+
+        Логика:
+        1. Создаём начальный Place
+        2. Для каждого действия создаём Transition и промежуточный Place
+        3. Обрабатываем условия (XOR-split) и альтернативы
+        4. Создаём конечный Place
+        5. Соединяем всё Arcs
+
+        Args:
+            raw_actions: Список словарей с данными о действиях.
+
+        Returns:
+            Построенный WorkflowNet.
+        """
+        if not raw_actions:
+            return WorkflowNet(
+                places=[
+                    Place("p_start", "Начало", PlaceType.START),
+                    Place("p_end", "Конец", PlaceType.END),
+                ],
+                transitions=[],
+                arcs=[],
+            )
+
+        places: list[Place] = []
+        transitions: list[Transition] = []
+        arcs: list[Arc] = []
+
+        # Начальный Place
+        p_start = Place("p_start", "Начало", PlaceType.START)
+        places.append(p_start)
+
+        # Отслеживаем текущее место для построения цепочки
+        current_place_id = p_start.id
+
+        # Отслеживаем условие, ожидающее альтернативу
+        pending_condition: dict | None = None
+        pending_condition_place_id: str | None = None
+
+        for i, action_data in enumerate(raw_actions):
+            t_id = f"t{i}"
+            is_alternative = action_data["is_alternative"]
+            has_guard = action_data["guard"] is not None
+
+            # Создаём Transition
+            transition = Transition(
+                id=t_id,
+                actor=action_data["actor"],
+                action=action_data["action"],
+                obj=action_data["obj"],
+                guard=action_data["guard"],
+                full_text=action_data["full_text"],
+            )
+            # Сохраняем флаг альтернативы для обратной совместимости
+            object.__setattr__(transition, '_is_alternative', is_alternative)
+            transitions.append(transition)
+
+            # Создаём Place после этого действия
+            p_after = Place(
+                f"p{i + 1}",
+                f"После: {action_data['action']}",
+                PlaceType.INTERMEDIATE,
+            )
+            places.append(p_after)
+
+            if is_alternative and pending_condition_place_id:
+                # Это альтернативная ветка — подключаем к месту условия
+                arcs.append(Arc(pending_condition_place_id, t_id, label="Нет"))
+                arcs.append(Arc(t_id, p_after.id))
+
+                # Альтернатива сливается с основным потоком
+                # (следующее действие будет подключено к p_after)
+                current_place_id = p_after.id
+                pending_condition = None
+                pending_condition_place_id = None
+
+            elif has_guard:
+                # Действие с условием — это XOR-split
+                # Сначала подключаем к текущему месту
+                arcs.append(Arc(current_place_id, t_id, label="Да"))
+                arcs.append(Arc(t_id, p_after.id))
+
+                # Запоминаем место для альтернативы
+                pending_condition = action_data
+                pending_condition_place_id = current_place_id
+
+                # Двигаемся дальше по основной ветке
+                current_place_id = p_after.id
+
+            else:
+                # Обычное действие — линейная связь
+                arcs.append(Arc(current_place_id, t_id))
+                arcs.append(Arc(t_id, p_after.id))
+                current_place_id = p_after.id
+
+        # Конечный Place
+        p_end = Place("p_end", "Конец", PlaceType.END)
+        places.append(p_end)
+
+        # Подключаем последнее место к концу
+        arcs.append(Arc(current_place_id, p_end.id))
+
+        # Если осталось незакрытое условие без альтернативы,
+        # подключаем его напрямую к концу
+        if pending_condition_place_id:
+            arcs.append(Arc(pending_condition_place_id, p_end.id, label="Нет"))
+
+        return WorkflowNet(places=places, transitions=transitions, arcs=arcs)
 
     def _extract_condition(self, sent, action_token) -> str | None:
         """

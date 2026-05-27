@@ -15,10 +15,9 @@
 
 from regulation2graph.config.settings import get_settings
 from regulation2graph.services import (
-    extract_process,
-    print_results,
-    save_to_neo4j,
-    visualize_process,
+    extract_workflow,
+    print_workflow,
+    save_workflow_to_neo4j,
 )
 
 
@@ -30,6 +29,7 @@ def load_sample_text() -> str:
     return """
     Менеджер получает заявку от клиента.
     Если заявка корректна, менеджер отправляет её директору.
+    Иначе менеджер возвращает заявку клиенту.
     Директор подписывает приказ.
     Бухгалтер начисляет премию.
     """
@@ -46,11 +46,12 @@ def main() -> None:
     print(f"\nВходной текст:\n{text}")
     print("-" * 60)
 
-    # Пайплайн обработки
-    triplets = extract_process(text)
-    print_results(triplets)
-    visualize_process(triplets)
-    save_to_neo4j(triplets, settings)
+    # Извлекаем Workflow Net
+    workflow = extract_workflow(text)
+    print_workflow(workflow)
+
+    # Сохраняем в Neo4j
+    save_workflow_to_neo4j(workflow, settings)
 
 
 if __name__ == "__main__":
