@@ -1,0 +1,69 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AnnotatedRegulation",
+  "description": "Schema for annotated regulation examples with ground truth triplets",
+  "type": "object",
+  "required": ["id", "text", "expected_triplets"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Unique identifier for the example",
+      "pattern": "^[a-z]+_[0-9]{3}$"
+    },
+    "text": {
+      "type": "string",
+      "description": "Input text of the regulation"
+    },
+    "expected_triplets": {
+      "type": "array",
+      "description": "List of expected triplets (ground truth)",
+      "items": {
+        "type": "object",
+        "required": ["actor", "action", "object"],
+        "properties": {
+          "actor": {
+            "type": "string",
+            "description": "Subject performing the action (lemmatized)"
+          },
+          "action": {
+            "type": "string",
+            "description": "Action verb (lemmatized, infinitive)"
+          },
+          "object": {
+            "type": "string",
+            "description": "Object of the action (lemmatized), '-' if none"
+          },
+          "condition": {
+            "type": ["string", "null"],
+            "description": "Condition text if present"
+          },
+          "is_alternative": {
+            "type": "boolean",
+            "default": false,
+            "description": "Whether this is an alternative branch"
+          }
+        }
+      }
+    },
+    "complexity": {
+      "type": "string",
+      "enum": ["simple", "medium", "hard"],
+      "description": "Complexity level of the example"
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Tags describing features present in the example"
+    },
+    "notes": {
+      "type": "string",
+      "description": "Optional notes about the example"
+    },
+    "source": {
+      "type": "string",
+      "description": "Source of the example (synthetic, real, adapted)"
+    }
+  }
+}

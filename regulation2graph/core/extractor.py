@@ -15,6 +15,7 @@ from natasha import (
 )
 
 from regulation2graph.config import get_settings
+from regulation2graph.core.morph_utils import generate_place_name
 from regulation2graph.models import (
     Arc,
     Place,
@@ -94,6 +95,9 @@ class RuleBasedExtractor:
         """
         Извлекает сырые данные о действиях из текста.
 
+        Поддерживает многоосновные предложения — из одного предложения
+        может быть извлечено несколько действий.
+
         Returns:
             Список словарей с данными о действиях.
         """
@@ -108,58 +112,172 @@ class RuleBasedExtractor:
             for token in sent.tokens:
                 token.lemmatize(self._morph_vocab)
 
-            action_data = self._extract_action_from_sentence(sent)
-            if action_data:
-                results.append(action_data)
+            # Извлекаем все действия из предложения (может быть несколько)
+            actions = self._extract_actions_from_sentence(sent)
+            results.extend(actions)
 
         return results
 
-    def _extract_action_from_sentence(self, sent) -> dict | None:
+    def _extract_actions_from_sentence(self, sent) -> list[dict]:
         """
-        Извлекает данные о действии из одного предложения.
+        Извлекает данные о действиях из одного предложения.
+
+        Поддерживает многоосновные предложения:
+        - "Менеджер проверяет заявку и директор подписывает договор" → 2 действия
+        - "Менеджер проверяет и подписывает заявку" → 2 действия (общий субъект)
 
         Args:
             sent: Предложение из Natasha Doc.
 
         Returns:
-            Словарь с данными о действии или None.
+            Список словарей с данными о действиях (может быть пустым).
         """
         nlp_settings = self._settings.nlp
 
-        # 1. Ищем Root (главный глагол = Действие)
-        roots = [t for t in sent.tokens if t.rel == "root"]
-        if not roots:
-            return None
-        action_token = roots[0]
+        # 1. Собираем все глаголы-сказуемые:
+        #    - root (может быть несколько — особенность парсера)
+        #    - conj к любому root (сочинённые сказуемые)
+        verb_tokens = []
+        root_ids = set()
 
-        # 2. Ищем Актора (субъект)
-        actor = "Unknown"
+        # Сначала находим все root
         for token in sent.tokens:
-            if token.head_id == action_token.id and token.rel in nlp_settings.subject_relations:
-                actor = token.lemma
-                break
+            if token.rel == "root" and token.pos == "VERB":
+                verb_tokens.append(token)
+                root_ids.add(token.id)
 
-        # 3. Ищем Объект
-        obj = "-"
+        if not verb_tokens:
+            return []
+
+        # Затем находим все conj к любому из root
         for token in sent.tokens:
-            if token.head_id == action_token.id and token.rel in nlp_settings.object_relations:
-                obj = token.lemma
-                break
+            if token.rel == "conj" and token.pos == "VERB":
+                # conj может быть связан с любым root или с другим conj
+                if token.head_id in root_ids or any(
+                    t.id == token.head_id for t in verb_tokens
+                ):
+                    verb_tokens.append(token)
 
-        # 4. Извлекаем условие (guard для Transition)
-        guard = self._extract_condition(sent, action_token)
+        # Первый root для наследования субъекта/объекта
+        primary_root = verb_tokens[0]
 
-        # 5. Проверяем маркер альтернативы
+        # 2. Проверяем маркер альтернативы (один раз для всего предложения)
         is_alternative = self._is_alternative_branch(sent)
 
-        return {
-            "actor": actor,
-            "action": action_token.lemma,
-            "obj": obj,
-            "guard": guard,
-            "is_alternative": is_alternative,
-            "full_text": sent.text.strip(),
-        }
+        # 3. Для каждого глагола извлекаем триплет
+        results = []
+        for i, verb_token in enumerate(verb_tokens):
+            # Ищем субъект для этого глагола
+            actor = self._find_actor_for_verb(sent, verb_token, primary_root, nlp_settings)
+
+            # Ищем объект для этого глагола (передаём все глаголы для наследования)
+            obj = self._find_object_for_verb(
+                sent, verb_token, primary_root, nlp_settings, all_verbs=verb_tokens
+            )
+
+            # Извлекаем условие (только для первого глагола)
+            guard = None
+            if i == 0:
+                guard = self._extract_condition(sent, verb_token)
+
+            # Альтернатива применяется только к первому действию
+            action_is_alternative = is_alternative if i == 0 else False
+
+            results.append({
+                "actor": actor,
+                "action": verb_token.lemma,
+                "obj": obj,
+                "guard": guard,
+                "is_alternative": action_is_alternative,
+                "full_text": sent.text.strip(),
+            })
+
+        return results
+
+    def _find_actor_for_verb(self, sent, verb_token, root_token, nlp_settings) -> str:
+        """
+        Находит актора для конкретного глагола.
+
+        Стратегия:
+        1. Ищем прямой nsubj у этого глагола
+        2. Если не найден и глагол != root, наследуем от root
+        3. Собираем составные субъекты через conj (А и Б)
+
+        Args:
+            sent: Предложение.
+            verb_token: Глагол, для которого ищем актора.
+            root_token: Корневой глагол предложения.
+            nlp_settings: Настройки NLP.
+
+        Returns:
+            Имя актора или "Unknown".
+        """
+        # Ищем прямой субъект
+        actor_token = None
+        for token in sent.tokens:
+            if token.head_id == verb_token.id and token.rel in nlp_settings.subject_relations:
+                actor_token = token
+                break
+
+        # Если не нашли и это не root — наследуем от root
+        if actor_token is None and verb_token != root_token:
+            for token in sent.tokens:
+                if token.head_id == root_token.id and token.rel in nlp_settings.subject_relations:
+                    actor_token = token
+                    break
+
+        if actor_token is None:
+            return "Unknown"
+
+        # Собираем составной субъект (А и Б)
+        actor_parts = [actor_token.lemma]
+        for token in sent.tokens:
+            if token.head_id == actor_token.id and token.rel == "conj":
+                actor_parts.append(token.lemma)
+
+        return " и ".join(actor_parts)
+
+    def _find_object_for_verb(
+        self, sent, verb_token, root_token, nlp_settings, all_verbs: list | None = None
+    ) -> str:
+        """
+        Находит объект для конкретного глагола.
+
+        Стратегия:
+        1. Ищем прямой obj/obl у этого глагола
+        2. Если не найден — наследуем от root
+        3. Если не найден — наследуем от других сочинённых глаголов (conj)
+
+        Args:
+            sent: Предложение.
+            verb_token: Глагол, для которого ищем объект.
+            root_token: Корневой глагол предложения.
+            nlp_settings: Настройки NLP.
+            all_verbs: Все глаголы предложения (для наследования от conj).
+
+        Returns:
+            Имя объекта или "-".
+        """
+        # Ищем прямой объект
+        for token in sent.tokens:
+            if token.head_id == verb_token.id and token.rel in nlp_settings.object_relations:
+                return token.lemma
+
+        # Если не нашли и это не root — наследуем от root
+        if verb_token != root_token:
+            for token in sent.tokens:
+                if token.head_id == root_token.id and token.rel in nlp_settings.object_relations:
+                    return token.lemma
+
+        # Если это root и не нашли — пробуем наследовать от conj
+        if verb_token == root_token and all_verbs:
+            for other_verb in all_verbs:
+                if other_verb != verb_token:
+                    for token in sent.tokens:
+                        if token.head_id == other_verb.id and token.rel in nlp_settings.object_relations:
+                            return token.lemma
+
+        return "-"
 
     def _build_workflow_net(self, raw_actions: list[dict]) -> WorkflowNet:
         """
@@ -202,6 +320,10 @@ class RuleBasedExtractor:
         # Отслеживаем условие, ожидающее альтернативу
         pending_condition: dict | None = None
         pending_condition_place_id: str | None = None
+        # Place после положительной ветки (для продолжения основного потока)
+        positive_branch_place_id: str | None = None
+        # Place после альтернативной ветки (для подключения к концу)
+        alternative_branch_place_id: str | None = None
 
         for i, action_data in enumerate(raw_actions):
             t_id = f"t{i}"
@@ -222,9 +344,14 @@ class RuleBasedExtractor:
             transitions.append(transition)
 
             # Создаём Place после этого действия
+            # Генерируем читаемое имя: "заявка отправлена", "договор подписан"
+            place_name = generate_place_name(
+                obj=action_data["obj"],
+                action=action_data["action"],
+            )
             p_after = Place(
                 f"p{i + 1}",
-                f"После: {action_data['action']}",
+                place_name,
                 PlaceType.INTERMEDIATE,
             )
             places.append(p_after)
@@ -233,12 +360,16 @@ class RuleBasedExtractor:
                 # Это альтернативная ветка — подключаем к месту условия
                 arcs.append(Arc(pending_condition_place_id, t_id, label="Нет"))
                 arcs.append(Arc(t_id, p_after.id))
+                # Запоминаем место альтернативной ветки для подключения к концу
+                alternative_branch_place_id = p_after.id
 
-                # Альтернатива сливается с основным потоком
-                # (следующее действие будет подключено к p_after)
-                current_place_id = p_after.id
+                # Продолжаем основной поток от положительной ветки
+                if positive_branch_place_id:
+                    current_place_id = positive_branch_place_id
+
                 pending_condition = None
                 pending_condition_place_id = None
+                positive_branch_place_id = None
 
             elif has_guard:
                 # Действие с условием — это XOR-split
@@ -249,6 +380,8 @@ class RuleBasedExtractor:
                 # Запоминаем место для альтернативы
                 pending_condition = action_data
                 pending_condition_place_id = current_place_id
+                # Запоминаем место положительной ветки
+                positive_branch_place_id = p_after.id
 
                 # Двигаемся дальше по основной ветке
                 current_place_id = p_after.id
@@ -263,8 +396,12 @@ class RuleBasedExtractor:
         p_end = Place("p_end", "Конец", PlaceType.END)
         places.append(p_end)
 
-        # Подключаем последнее место к концу
+        # Подключаем последнее место основного потока к концу
         arcs.append(Arc(current_place_id, p_end.id))
+
+        # Подключаем альтернативную ветку к концу (если была)
+        if alternative_branch_place_id:
+            arcs.append(Arc(alternative_branch_place_id, p_end.id))
 
         # Если осталось незакрытое условие без альтернативы,
         # подключаем его напрямую к концу

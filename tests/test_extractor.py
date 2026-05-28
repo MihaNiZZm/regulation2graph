@@ -188,3 +188,111 @@ class TestWorkflowNetExtraction:
         assert workflow.start_place is not None
         assert workflow.end_place is not None
         assert len(workflow.transitions) == 0
+
+
+class TestCompoundSentences:
+    """Тесты на многоосновные (сложносочинённые) предложения."""
+
+    def test_two_independent_clauses(self, extractor: RuleBasedExtractor) -> None:
+        """Два независимых действия с разными субъектами."""
+        workflow = extractor.extract(
+            "Менеджер проверяет заявку и директор подписывает договор."
+        )
+
+        assert len(workflow.transitions) == 2
+        t1, t2 = workflow.transitions
+
+        assert t1.actor == "менеджер"
+        assert t1.action == "проверять"
+        assert t1.obj == "заявка"
+
+        assert t2.actor == "директор"
+        assert t2.action == "подписывать"
+        assert t2.obj == "договор"
+
+    def test_shared_subject_two_verbs(self, extractor: RuleBasedExtractor) -> None:
+        """Один субъект, два глагола с общим объектом."""
+        workflow = extractor.extract("Менеджер проверяет и подписывает заявку.")
+
+        assert len(workflow.transitions) == 2
+        t1, t2 = workflow.transitions
+
+        # Оба действия имеют одного актора
+        assert t1.actor == "менеджер"
+        assert t2.actor == "менеджер"
+
+        # Оба действия имеют один объект (унаследованный)
+        assert t1.obj == "заявка"
+        assert t2.obj == "заявка"
+
+        # Разные действия
+        assert t1.action == "проверять"
+        assert t2.action == "подписывать"
+
+    def test_compound_subject(self, extractor: RuleBasedExtractor) -> None:
+        """Составной субъект (А и Б)."""
+        workflow = extractor.extract("Менеджер и директор проверяют заявку.")
+
+        assert len(workflow.transitions) == 1
+        t = workflow.transitions[0]
+
+        # Составной актор
+        assert "менеджер" in t.actor
+        assert "директор" in t.actor
+        assert " и " in t.actor
+
+        assert t.action == "проверять"
+        assert t.obj == "заявка"
+
+    def test_three_independent_clauses(self, extractor: RuleBasedExtractor) -> None:
+        """Три независимых действия с разными субъектами."""
+        workflow = extractor.extract(
+            "Секретарь регистрирует документ, "
+            "бухгалтер проверяет расчёты, "
+            "директор утверждает бюджет."
+        )
+
+        assert len(workflow.transitions) == 3
+
+        actors = [t.actor for t in workflow.transitions]
+        assert "секретарь" in actors
+        assert "бухгалтер" in actors
+        assert "директор" in actors
+
+        actions = [t.action for t in workflow.transitions]
+        assert "регистрировать" in actions
+        assert "проверять" in actions
+        assert "утверждать" in actions
+
+    def test_compound_with_condition(self, extractor: RuleBasedExtractor) -> None:
+        """Сложное предложение с условием в первой части."""
+        workflow = extractor.extract(
+            "Если заявка одобрена, менеджер подписывает и секретарь регистрирует."
+        )
+
+        assert len(workflow.transitions) == 2
+        t1, t2 = workflow.transitions
+
+        # Условие только у первого действия
+        assert t1.has_guard is True
+        assert t2.has_guard is False
+
+    def test_workflow_net_structure_with_compound(
+        self, extractor: RuleBasedExtractor
+    ) -> None:
+        """WorkflowNet корректно строится для многоосновного предложения."""
+        workflow = extractor.extract(
+            "Менеджер проверяет заявку и директор подписывает договор."
+        )
+
+        # start + 2 intermediate + end = 4 places
+        assert len(workflow.places) == 4
+
+        # Проверяем, что все transitions связаны arcs
+        transition_ids = {t.id for t in workflow.transitions}
+        arc_sources = {arc.source_id for arc in workflow.arcs}
+        arc_targets = {arc.target_id for arc in workflow.arcs}
+
+        # Каждый transition должен быть и source, и target
+        for t_id in transition_ids:
+            assert t_id in arc_sources or t_id in arc_targets

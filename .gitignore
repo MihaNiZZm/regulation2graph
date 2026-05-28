@@ -17,6 +17,8 @@ __pycache__/
 # Project specific
 .env
 output/
+data/reports/
 mcpserver.log
 *.ipynb_checkpoints/
 .claude/
+article_draft.md
