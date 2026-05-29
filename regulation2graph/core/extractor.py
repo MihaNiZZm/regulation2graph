@@ -16,6 +16,12 @@ from natasha import (
 
 from regulation2graph.config import get_settings
 from regulation2graph.core.morph_utils import generate_place_name
+from regulation2graph.markers import (
+    MarkerDetector,
+    extract_alternative_marker,
+    extract_condition_marker,
+    strip_condition_marker,
+)
 from regulation2graph.models import (
     Arc,
     Place,
@@ -53,6 +59,9 @@ class RuleBasedExtractor:
         self._morph_vocab = MorphVocab()
         self._morph_tagger = NewsMorphTagger(self._embedding)
         self._syntax_parser = NewsSyntaxParser(self._embedding)
+
+        # Детектор маркеров (условия, альтернативы, циклы)
+        self._marker_detector = MarkerDetector()
 
     def extract(self, text: str) -> WorkflowNet:
         """
@@ -416,7 +425,7 @@ class RuleBasedExtractor:
 
         Стратегия:
         1. Ищем advcl (adverbial clause) - подчинённое условное предложение
-        2. Если нет, проверяем маркеры в начале предложения
+        2. Если нет, проверяем маркеры в начале предложения через MarkerDetector
 
         Args:
             sent: Предложение.
@@ -437,18 +446,12 @@ class RuleBasedExtractor:
                     condition_text = " ".join(t.text for t in condition_tokens)
                     return self._clean_condition_text(condition_text)
 
-        # Стратегия 2: Проверка маркеров в начале
-        first_lemma = sent.tokens[0].lemma.lower()
-        if first_lemma in nlp_settings.condition_markers:
-            # Простой fallback - помечаем что условие есть
-            return "CONDITION_DETECTED"
-
-        # Стратегия 3: Проверка "в случае" (два слова)
-        if len(sent.tokens) >= 2:
-            two_words = f"{sent.tokens[0].text.lower()} {sent.tokens[1].text.lower()}"
-            for marker in nlp_settings.condition_markers:
-                if two_words.startswith(marker):
-                    return "CONDITION_DETECTED"
+        # Стратегия 2: Проверка маркеров в начале предложения через MarkerDetector
+        match = self._marker_detector.detect_condition(sent.text)
+        if match:
+            # Маркер найден — возвращаем оставшийся текст как условие
+            # или CONDITION_DETECTED если текст пустой
+            return match.remaining_text.strip() or "CONDITION_DETECTED"
 
         return None
 
@@ -479,36 +482,12 @@ class RuleBasedExtractor:
 
     def _clean_condition_text(self, text: str) -> str:
         """Очищает текст условия от маркеров и лишних символов."""
-        nlp_settings = self._settings.nlp
-
         text = text.strip().rstrip(",").strip()
 
-        # Убираем маркер условия в начале
-        text_lower = text.lower()
-        for marker in nlp_settings.condition_markers:
-            if text_lower.startswith(marker):
-                text = text[len(marker) :].strip()
-                break
-
-        return text
+        # Используем strip_condition_marker из модуля markers
+        return strip_condition_marker(text)
 
     def _is_alternative_branch(self, sent) -> bool:
         """Проверяет, начинается ли предложение с маркера альтернативы."""
-        nlp_settings = self._settings.nlp
-
-        first_lemma = sent.tokens[0].lemma.lower()
-        if first_lemma in nlp_settings.alternative_markers:
-            return True
-
-        # Проверка двухсловных маркеров
-        if len(sent.tokens) >= 3:
-            three_words = (
-                f"{sent.tokens[0].text.lower()} "
-                f"{sent.tokens[1].text.lower()} "
-                f"{sent.tokens[2].text.lower()}"
-            )
-            for marker in nlp_settings.alternative_markers:
-                if three_words.startswith(marker):
-                    return True
-
-        return False
+        # Используем MarkerDetector для проверки альтернативы
+        return self._marker_detector.detect_alternative(sent.text) is not None
