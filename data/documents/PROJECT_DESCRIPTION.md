@@ -24,6 +24,27 @@
 
 ---
 
+## 🎯 Следующий шаг: Интеграция RuCoBERT для кореференции
+
+**Задача:** Интегрировать модель RuCoBERT для более точного разрешения кореференции.
+
+**Текущее состояние:**
+- Реализован `RuleBasedResolver` на pymorphy3 (согласование по роду/числу)
+- F1 на бенчмарке с кореференцией: **0.753**
+- Известные ограничения: неоднозначные ситуации, сложные цепочки
+
+**Ожидаемый результат:**
+- Интеграция предобученной модели RuCoBERT
+- Улучшение F1 на сложных примерах кореференции
+- Гибридный режим: RuCoBERT + fallback на rules
+
+**Ресурсы:**
+- RuCoCo (Russian Coreference Corpus): https://github.com/dialogue-evaluation/RuCoCo
+- RuCoBERT модели: https://huggingface.co/collections/ai-forever/
+- Документация по подходу: `data/documents/BERT_LABELING_APPROACH.md`
+
+---
+
 ## Текущий стек
 
 | Компонент | Технология | Статус |
@@ -55,7 +76,12 @@ regulation2graph/
 │   ├── core/                         # Бизнес-логика (как @Service)
 │   │   ├── __init__.py
 │   │   ├── extractor.py              # RuleBasedExtractor
-│   │   └── morph_utils.py            # Морфологические утилиты (pymorphy3)
+│   │   ├── morph_utils.py            # Морфологические утилиты (pymorphy3)
+│   │   └── coreference/              # Модуль кореференции
+│   │       ├── __init__.py           # Публичный API + create_resolver()
+│   │       ├── models.py             # Mention, CoreferenceCluster, CoreferenceResult
+│   │       ├── protocol.py           # CoreferenceResolver Protocol
+│   │       └── rule_based.py         # RuleBasedResolver (pymorphy3)
 │   │
 │   ├── markers/                      # Словари маркеров (NEW)
 │   │   ├── __init__.py               # MarkerDetector
@@ -86,16 +112,19 @@ regulation2graph/
 │   ├── __init__.py
 │   ├── conftest.py                   # Фикстуры pytest
 │   ├── test_extractor.py             # Unit-тесты
+│   ├── test_coreference.py           # Тесты кореференции
 │   └── benchmarks/
-│       ├── test_benchmark.py         # Бенчмарк качества (старый)
 │       └── benchmark_metrics.py      # Бенчмарк с метриками P/R/F1
 │
 └── data/                             # Данные и документация
     ├── documents/
-    │   └── PROJECT_DESCRIPTION.md    # Документация проекта
+    │   ├── PROJECT_DESCRIPTION.md    # Документация проекта
+    │   └── BERT_LABELING_APPROACH.md # Подход к BERT-классификации
     ├── annotated/                    # Размеченные данные (ground truth)
     │   ├── schema.json               # JSON Schema для разметки
-    │   └── regulations.jsonl         # 20 размеченных примеров
+    │   └── regulations.jsonl         # 25 размеченных примеров
+    ├── reports/                      # Отчёты бенчмарков (историчность)
+    │   └── benchmark_*.md            # Автогенерируемые отчёты
     └── examples/
         ├── sample_regulation.txt
         └── test_regulations.txt      # Тестовые регламенты
@@ -170,33 +199,37 @@ regulation2graph/
 ### 7. Тесты (`tests/`)
 - Unit-тесты для Triplet и RuleBasedExtractor
 - Тесты для GraphVisualizer с логикой ветвления
-- Бенчмарк по 3 категориям: Simple, Medium, Hard
-- **54 теста**, все проходят (включая 6 тестов на многоосновные предложения)
+- Тесты для модуля кореференции (23 теста)
+- **111 тестов**, все проходят
 
 ### 8. Benchmark с метриками (`tests/benchmarks/benchmark_metrics.py`)
-- **Ground truth:** 20 размеченных примеров в `data/annotated/regulations.jsonl`
+- **Ground truth:** 25 размеченных примеров в `data/annotated/regulations.jsonl`
 - **Метрики:** Precision, Recall, F1 (micro/macro)
 - **Разбивка:** по сложности (simple/medium/hard) и по тегам
-- **Автогенерация отчётов:** markdown-отчёты с детализацией ошибок
+- **Историчность:** отчёты сохраняются в `data/reports/` с timestamp
+- **Флаг `--coref`:** запуск с/без кореференции для сравнения
 
-**Текущие метрики (baseline):**
+**Текущие метрики (с кореференцией):**
 
 | Сложность | Cases | Perfect | F1 |
 |-----------|-------|---------|-----|
 | Simple | 4 | 100% | 1.000 |
-| Medium | 7 | 86% | 0.917 |
-| Hard | 9 | 44% | 0.647 |
-| **Total** | **20** | **70%** | **0.794** |
+| Medium | 7 | 100% | 1.000 |
+| Hard | 14 | 36% | 0.610 |
+| **Total** | **25** | **64%** | **0.753** |
 
-**Проблемные области (F1 < 0.5):**
-- `coreference` (0.400) — местоимения не резолвятся
-- `passive_voice` (0.000) — пассивный залог не поддерживается
-- `when_clause` (0.000) — "когда" работает хуже "если"
+**Сравнение с/без кореференции:**
+
+| Режим | Micro F1 | Perfect |
+|-------|----------|---------|
+| Без кореференции | 0.660 | 56% |
+| С кореференцией | 0.753 | 64% |
 
 **Запуск:**
 ```bash
-python -m tests.benchmarks.benchmark_metrics           # Краткая сводка
-python -m tests.benchmarks.benchmark_metrics --report  # + markdown отчёт
+python -m tests.benchmarks.benchmark_metrics                  # Без кореференции
+python -m tests.benchmarks.benchmark_metrics --coref          # С кореференцией
+python -m tests.benchmarks.benchmark_metrics --coref --report # + markdown отчёт
 ```
 
 ---
@@ -305,7 +338,7 @@ python -m tests.benchmarks.benchmark_metrics --report  # + markdown отчёт
 5. ✅ Обновить визуализатор для отображения ветвлений (MultiDiGraph)
 6. ✅ Добавить тесты на ветвление (tests/test_visualizer.py)
 
-### Фаза 2: Кореференция (СЛЕДУЮЩИЙ ШАГ)
+### Фаза 2: Кореференция ✅ ЗАВЕРШЕНО (базовая версия)
 
 **Цель:** Разрешение местоимений и анафорических ссылок.
 
@@ -315,25 +348,37 @@ python -m tests.benchmarks.benchmark_metrics --report  # + markdown отчёт
 → "он" = менеджер, "её" = заявка
 ```
 
-Без кореференции система не свяжет "он" с "менеджер", и триплет будет неполным.
+**Реализовано:**
+1. ✅ Модуль `regulation2graph/core/coreference/` с архитектурой Protocol + Factory
+2. ✅ `RuleBasedResolver` — резолвер на правилах с pymorphy3 (согласование род/число)
+3. ✅ Поддержка личных местоимений (он/она/они) и притяжательных (его/её/их)
+4. ✅ Интеграция в `RuleBasedExtractor` через опциональный параметр `coreference_resolver`
+5. ✅ Тесты в `tests/test_coreference.py` (23 теста)
+6. ✅ Флаг `--coref` в бенчмарке для сравнения результатов
 
-**Варианты решения (требуется анализ):**
+**Результаты бенчмарка:**
 
-| Подход | Библиотека | Плюсы | Минусы |
-|--------|------------|-------|--------|
-| Правила | Свой код | Простота, контроль | Ограниченная точность |
-| DeepPavlov | `deeppavlov` | Готовая модель для русского | Тяжёлая зависимость |
-| Natasha | `natasha` | Уже используется, NER есть | Нет полноценной кореференции |
-| spaCy + coref | `spacy`, `coreferee` | Качественно для английского | Слабая поддержка русского |
-| RuBERT-based | `transformers` | Высокое качество | Требует fine-tuning, GPU |
-| LLM-based | API Claude/GPT | Отличное качество | Дорого, latency |
+| Метрика | Без кореференции | С кореференцией | Улучшение |
+|---------|------------------|-----------------|-----------|
+| Micro F1 | 0.794 | 0.853 | +7.4% |
+| Perfect cases | 70% | 80% | +10% |
+| HARD F1 | 0.647 | 0.706 | +9.1% |
 
-**Задачи:**
-1. Исследовать существующие решения для русского языка
-2. Протестировать DeepPavlov coref на примерах регламентов
-3. Оценить правиловый подход (согласование по роду/числу/падежу)
-4. Выбрать подход и реализовать интеграцию
-5. Добавить тесты на кореференцию
+**Известные ограничения текущего решения:**
+- Неоднозначные ситуации (два кандидата одного рода) — берётся последний
+- Сложные цепочки кореференции могут обрабатываться неточно
+- Нет поддержки указательных местоимений (этот, тот, такой)
+
+**TODO: Исследование DeepPavlov (низкий приоритет):**
+
+> Протестировать синтаксический анализ инструментами DeepPavlov, провести сравнение с текущим подходом на Natasha, составить отчёт и принять решение о выборе инструмента для дальнейшего использования.
+
+**Примечание:** При попытке интеграции DeepPavlov обнаружены проблемы:
+- Конфликты зависимостей (numpy, pandas версии)
+- Модель `syntax_ru_syntagrus_bert` очень медленно загружается
+- Coreference модель DeepPavlov имеет известные баги (Issue #1344)
+
+Решено отложить исследование DeepPavlov до стабилизации библиотеки.
 
 **Ресурсы для изучения:**
 - DeepPavlov Coreference: http://docs.deeppavlov.ai/en/master/features/models/coreference.html

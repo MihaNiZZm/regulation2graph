@@ -279,14 +279,30 @@ def evaluate_case(
 
 
 def run_benchmark(
-    data_path: Path | None = None, strict: bool = False
+    data_path: Path | None = None,
+    strict: bool = False,
+    use_coreference: bool = False,
 ) -> BenchmarkReport:
-    """Запускает бенчмарк на всех тестовых примерах."""
+    """
+    Запускает бенчмарк на всех тестовых примерах.
+
+    Args:
+        data_path: Путь к JSONL файлу с тестовыми примерами.
+        strict: Строгое сравнение (включая условия).
+        use_coreference: Использовать резолвер кореференции.
+    """
     if data_path is None:
         data_path = Path(__file__).parent.parent.parent / "data/annotated/regulations.jsonl"
 
     cases = load_test_cases(data_path)
-    extractor = RuleBasedExtractor()
+
+    # Создаём экстрактор с опциональной кореференцией
+    coref_resolver = None
+    if use_coreference:
+        from regulation2graph.core.coreference import RuleBasedResolver
+        coref_resolver = RuleBasedResolver()
+
+    extractor = RuleBasedExtractor(coreference_resolver=coref_resolver)
 
     results = [evaluate_case(extractor, case, strict=strict) for case in cases]
 
@@ -444,20 +460,31 @@ def print_summary(report: BenchmarkReport) -> None:
 if __name__ == "__main__":
     import sys
 
-    report = run_benchmark()
+    # Парсим аргументы
+    use_coref = "--coref" in sys.argv
+    generate_report = "--report" in sys.argv
+
+    if use_coref:
+        print("Running benchmark WITH coreference resolution...")
+    else:
+        print("Running benchmark WITHOUT coreference resolution...")
+        print("(use --coref to enable coreference)")
+
+    report = run_benchmark(use_coreference=use_coref)
     print_summary(report)
 
-    if "--report" in sys.argv:
+    if generate_report:
         report_path = Path(__file__).parent.parent.parent / "data/reports"
         report_path.mkdir(exist_ok=True)
 
-        report_file = report_path / f"benchmark_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+        suffix = "_coref" if use_coref else ""
+        report_file = report_path / f"benchmark_{datetime.now().strftime('%Y%m%d_%H%M%S')}{suffix}.md"
         with open(report_file, "w") as f:
             f.write(generate_markdown_report(report))
         print(f"\nReport saved to: {report_file}")
 
         # Также сохраняем как latest
-        latest_file = report_path / "benchmark_latest.md"
+        latest_file = report_path / f"benchmark_latest{suffix}.md"
         with open(latest_file, "w") as f:
             f.write(generate_markdown_report(report))
         print(f"Latest report:   {latest_file}")

@@ -5,6 +5,10 @@ Rule-based извлечение Workflow Net из текста.
 полную модель Workflow Net с Places и Arcs.
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from natasha import (
     Doc,
     MorphVocab,
@@ -32,6 +36,9 @@ from regulation2graph.models import (
 # Legacy import для обратной совместимости
 from regulation2graph.models import GatewayType, Triplet
 
+if TYPE_CHECKING:
+    from regulation2graph.core.coreference import CoreferenceResolver
+
 
 class RuleBasedExtractor:
     """
@@ -49,8 +56,22 @@ class RuleBasedExtractor:
         'менеджер'
     """
 
-    def __init__(self) -> None:
-        """Инициализация NLP-моделей (тяжёлая операция, делается один раз)."""
+    def __init__(
+        self,
+        coreference_resolver: CoreferenceResolver | None = None,
+    ) -> None:
+        """
+        Инициализация NLP-моделей.
+
+        Args:
+            coreference_resolver: Опциональный резолвер кореференции.
+                Если указан, местоимения будут заменяться на антецеденты
+                перед извлечением триплетов.
+
+        Note:
+            Инициализация NLP-моделей — тяжёлая операция,
+            рекомендуется создавать экстрактор один раз.
+        """
         self._settings = get_settings()
 
         # Natasha components
@@ -62,6 +83,9 @@ class RuleBasedExtractor:
 
         # Детектор маркеров (условия, альтернативы, циклы)
         self._marker_detector = MarkerDetector()
+
+        # Опциональный резолвер кореференции
+        self._coref_resolver = coreference_resolver
 
     def extract(self, text: str) -> WorkflowNet:
         """
@@ -110,6 +134,11 @@ class RuleBasedExtractor:
         Returns:
             Список словарей с данными о действиях.
         """
+        # Шаг 0: Резолв кореференции (если резолвер настроен)
+        if self._coref_resolver is not None:
+            coref_result = self._coref_resolver.resolve(text)
+            text = coref_result.resolved_text
+
         doc = Doc(text)
         doc.segment(self._segmenter)
         doc.tag_morph(self._morph_tagger)
