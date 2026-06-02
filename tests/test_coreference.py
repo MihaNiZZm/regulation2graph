@@ -275,3 +275,70 @@ class TestRealRegulationExamples:
         # Оба местоимения должны быть разрешены
         assert result.was_modified
         assert len(result.clusters) >= 1
+
+
+# Пропускаем нейросетевые тесты, если torch/transformers не установлены
+# либо модель недоступна (нет кэша и сети).
+torch = pytest.importorskip("torch", reason="RuBERT-тесты требуют torch/transformers")
+
+
+@pytest.fixture(scope="module")
+def rubert_resolver():
+    """Загружает RuBertResolver один раз на модуль (тяжёлая операция)."""
+    from regulation2graph.core.coreference.rubert import RuBertResolver
+
+    try:
+        return RuBertResolver()
+    except Exception as exc:  # pragma: no cover - зависит от наличия модели
+        pytest.skip(f"RuBERT модель недоступна: {exc}")
+
+
+class TestRuBertResolver:
+    """Тесты для нейросетевого RuBertResolver."""
+
+    def test_implements_protocol(self, rubert_resolver):
+        """RuBertResolver удовлетворяет протоколу CoreferenceResolver."""
+        assert isinstance(rubert_resolver, CoreferenceResolver)
+
+    def test_no_pronouns_returns_unchanged(self, rubert_resolver):
+        """Текст без местоимений не меняется."""
+        text = "Менеджер проверяет заявку."
+        result = rubert_resolver.resolve(text)
+
+        assert isinstance(result, CoreferenceResult)
+        assert result.resolved_text == text
+        assert not result.was_modified
+
+    def test_resolves_simple_subject_pronoun(self, rubert_resolver):
+        """Местоимение-подлежащее резолвится в единственного антецедента."""
+        text = "Менеджер проверяет заявку. Он подписывает договор."
+        result = rubert_resolver.resolve(text)
+
+        assert result.was_modified
+        assert "менеджер" in result.resolved_text.lower()
+
+    def test_object_pronoun_prefers_object_semantically(self, rubert_resolver):
+        """
+        Среди нескольких согласованных кандидатов RuBERT семантически
+        выбирает объект действия: "его" → договор (не секретарь).
+        """
+        text = (
+            "Менеджер подписывает договор "
+            "и секретарь регистрирует его."
+        )
+        result = rubert_resolver.resolve(text)
+
+        assert result.was_modified
+        # "его" должно разрешиться в "договор", а не в одушевлённого актора
+        assert "договор" in result.resolved_text.lower()
+
+    def test_create_resolver_rubert_backend(self):
+        """Фабрика создаёт RuBertResolver по backend='rubert'."""
+        from regulation2graph.core.coreference.rubert import RuBertResolver
+
+        try:
+            resolver = create_resolver(backend="rubert")
+        except Exception as exc:  # pragma: no cover
+            pytest.skip(f"RuBERT модель недоступна: {exc}")
+
+        assert isinstance(resolver, RuBertResolver)

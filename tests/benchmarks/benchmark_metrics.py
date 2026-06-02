@@ -282,6 +282,7 @@ def run_benchmark(
     data_path: Path | None = None,
     strict: bool = False,
     use_coreference: bool = False,
+    coref_backend: str = "rules",
 ) -> BenchmarkReport:
     """
     Запускает бенчмарк на всех тестовых примерах.
@@ -290,6 +291,7 @@ def run_benchmark(
         data_path: Путь к JSONL файлу с тестовыми примерами.
         strict: Строгое сравнение (включая условия).
         use_coreference: Использовать резолвер кореференции.
+        coref_backend: Бэкенд кореференции ("rules" или "rubert").
     """
     if data_path is None:
         data_path = Path(__file__).parent.parent.parent / "data/annotated/regulations.jsonl"
@@ -299,8 +301,9 @@ def run_benchmark(
     # Создаём экстрактор с опциональной кореференцией
     coref_resolver = None
     if use_coreference:
-        from regulation2graph.core.coreference import RuleBasedResolver
-        coref_resolver = RuleBasedResolver()
+        from regulation2graph.core.coreference import create_resolver
+
+        coref_resolver = create_resolver(backend=coref_backend)
 
     extractor = RuleBasedExtractor(coreference_resolver=coref_resolver)
 
@@ -461,23 +464,30 @@ if __name__ == "__main__":
     import sys
 
     # Парсим аргументы
-    use_coref = "--coref" in sys.argv
+    use_rubert = "--rubert" in sys.argv
+    # --rubert подразумевает использование кореференции
+    use_coref = "--coref" in sys.argv or use_rubert
     generate_report = "--report" in sys.argv
 
-    if use_coref:
-        print("Running benchmark WITH coreference resolution...")
+    coref_backend = "rubert" if use_rubert else "rules"
+
+    if use_rubert:
+        print("Running benchmark WITH coreference resolution (RuBERT backend)...")
+        print("(первый запуск скачает модель ai-forever/ruBert-base ~700MB)")
+    elif use_coref:
+        print("Running benchmark WITH coreference resolution (rule-based backend)...")
     else:
         print("Running benchmark WITHOUT coreference resolution...")
-        print("(use --coref to enable coreference)")
+        print("(use --coref for rules, --rubert for RuBERT)")
 
-    report = run_benchmark(use_coreference=use_coref)
+    report = run_benchmark(use_coreference=use_coref, coref_backend=coref_backend)
     print_summary(report)
 
     if generate_report:
         report_path = Path(__file__).parent.parent.parent / "data/reports"
         report_path.mkdir(exist_ok=True)
 
-        suffix = "_coref" if use_coref else ""
+        suffix = "_rubert" if use_rubert else ("_coref" if use_coref else "")
         report_file = report_path / f"benchmark_{datetime.now().strftime('%Y%m%d_%H%M%S')}{suffix}.md"
         with open(report_file, "w") as f:
             f.write(generate_markdown_report(report))

@@ -22,3 +22,6 @@ mcpserver.log
 *.ipynb_checkpoints/
 .claude/
 article_draft.md
+
+# HuggingFace model cache (RuBERT, ~700MB)
+.hf_cache/

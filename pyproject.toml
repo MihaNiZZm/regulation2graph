@@ -27,6 +27,12 @@ dev = [
     "ruff>=0.1.0",
     "mypy>=1.0.0",
 ]
+# Нейросетевая кореференция на RuBERT (опционально, тяжёлые зависимости).
+# Установка: pip install -e ".[coref]"
+coref = [
+    "torch>=2.2",
+    "transformers>=4.40",
+]
 
 [project.scripts]
 reg2graph = "regulation2graph.main:main"

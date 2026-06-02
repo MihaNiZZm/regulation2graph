@@ -5,10 +5,9 @@
 - Личные местоимения: он, она, они, оно
 - Притяжательные местоимения: его, её, их
 
-Текущая реализация:
-- RuleBasedResolver: быстрый, без GPU, на pymorphy3
-
-TODO: Интеграция RuCoBERT для более точного разрешения кореференции.
+Реализации:
+- RuleBasedResolver: быстрый, без GPU, на pymorphy3 (согласование род/число)
+- RuBertResolver: нейросетевой mention-ranking на RuBERT (требует ".[coref]")
 
 Пример использования:
     >>> from regulation2graph.core.coreference import create_resolver
@@ -32,13 +31,15 @@ from regulation2graph.core.coreference.rule_based import RuleBasedResolver
 
 
 def create_resolver(
-    backend: Literal["rules"] = "rules",
+    backend: Literal["rules", "rubert"] = "rules",
 ) -> CoreferenceResolver:
     """
     Создаёт резолвер кореференции.
 
     Args:
-        backend: Выбор резолвера ("rules" — единственный доступный).
+        backend: Выбор резолвера:
+            - "rules": rule-based на pymorphy3 (лёгкий, CPU).
+            - "rubert": нейросетевой на RuBERT (требует pip install -e ".[coref]").
 
     Returns:
         Экземпляр CoreferenceResolver.
@@ -50,12 +51,19 @@ def create_resolver(
     if backend == "rules":
         return RuleBasedResolver()
 
+    if backend == "rubert":
+        # Импорт здесь, чтобы тяжёлые зависимости (torch/transformers)
+        # требовались только при фактическом использовании RuBERT.
+        from regulation2graph.core.coreference.rubert import RuBertResolver
+
+        return RuBertResolver()
+
     raise ValueError(f"Unknown backend: {backend}")
 
 
 def resolve_coreferences(
     text: str,
-    backend: Literal["rules"] = "rules",
+    backend: Literal["rules", "rubert"] = "rules",
 ) -> str:
     """
     Удобная функция для быстрого резолва кореференций.
@@ -85,8 +93,18 @@ __all__ = [
     "Mention",
     # Резолверы
     "RuleBasedResolver",
+    "RuBertResolver",
     # Фабрика
     "create_resolver",
     # Удобная функция
     "resolve_coreferences",
 ]
+
+
+def __getattr__(name: str) -> object:
+    """Ленивая загрузка RuBertResolver (тяжёлые зависимости torch/transformers)."""
+    if name == "RuBertResolver":
+        from regulation2graph.core.coreference.rubert import RuBertResolver
+
+        return RuBertResolver
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

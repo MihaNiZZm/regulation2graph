@@ -24,24 +24,55 @@
 
 ---
 
-## 🎯 Следующий шаг: Интеграция RuCoBERT для кореференции
+## ✅ Выполнено: Нейросетевая кореференция на RuBERT
 
-**Задача:** Интегрировать модель RuCoBERT для более точного разрешения кореференции.
+**Задача:** Интегрировать предобученную модель для более точного разрешения кореференции.
 
-**Текущее состояние:**
-- Реализован `RuleBasedResolver` на pymorphy3 (согласование по роду/числу)
-- F1 на бенчмарке с кореференцией: **0.753**
-- Известные ограничения: неоднозначные ситуации, сложные цепочки
+**Что сделано:**
+- Реализован `RuBertResolver` (`core/coreference/rubert.py`) — нейросетевой
+  mention-ranking на эмбеддингах `ai-forever/ruBert-base` (180M).
+- Подключён через фабрику `create_resolver(backend="rubert")` и флаг `--rubert` в бенчмарке.
+- Морфология (поиск упоминаний, склонение антецедента) переиспользуется из
+  `RuleBasedResolver` → консистентность с rule-based режимом.
+- Авто-выбор устройства: MPS (Apple Silicon) → CUDA → CPU.
+- Тяжёлые зависимости вынесены в optional-extra `[coref]` (torch, transformers).
 
-**Ожидаемый результат:**
-- Интеграция предобученной модели RuCoBERT
-- Улучшение F1 на сложных примерах кореференции
-- Гибридный режим: RuCoBERT + fallback на rules
+**Результаты бенчмарка (29 примеров, расширен неоднозначными кейсами):**
+
+| Режим | Micro F1 | Perfect | HARD F1 |
+|-------|----------|---------|---------|
+| Без кореференции | 0.655 | 48% | 0.537 |
+| Rules (pymorphy3) | 0.730 | 55% | 0.617 |
+| **RuBERT** | **0.852** | **72%** | **0.790** |
+
+**Ключевой механизм улучшения:** для неоднозначных объектных местоимений
+(«…секретарь регистрирует **его**») rule-based слепо берёт ближайшее существительное
+(→ секретарь), а RuBERT по семантической близости эмбеддингов выбирает реальный
+объект действия (→ договор). Нейросеть подключается только когда есть ≥2 кандидата,
+согласованных по роду/числу; иначе работает морфология.
+
+**Влияние длины контекста (важно):** эксперименты показали, что для наивного
+mention-ranking на косинусной близости **больше контекста ≠ лучше**. Один-два
+дистрактора между антецедентом и местоимением сбивают разрешение
+(«Директор подписывает отчёт. *Бухгалтер вносит правки.* Секретарь отправляет его»
+→ его ошибочно резолвится в «секретарь»/«договор»). Причина: у голых эмбеддингов нет
+понятия дискурсивной выделенности и взвешивания по расстоянию. Это мотивирует переход
+к обученной голове mention-ranking (wl-coref) для устойчивости на длинных регламентах.
+
+**Заметка об установке:** AllenNLP-версия RuCo-BERT (gleb-skobinsky) несовместима
+с Python 3.11 / numpy 2.x (AllenNLP заброшен) — поэтому выбран лёгкий путь на
+`transformers`. Для загрузки модели на этой машине нужно отключать `hf-xet`
+(`HF_HUB_DISABLE_XET=1`), иначе скачивание зависает.
 
 **Ресурсы:**
 - RuCoCo (Russian Coreference Corpus): https://github.com/dialogue-evaluation/RuCoCo
-- RuCoBERT модели: https://huggingface.co/collections/ai-forever/
+- RuBERT модели: https://huggingface.co/ai-forever/ruBert-base
 - Документация по подходу: `data/documents/BERT_LABELING_APPROACH.md`
+
+**Следующий шаг (для усиления):**
+- Расширить бенчмарк неоднозначными многокандидатными примерами кореференции.
+- Рассмотреть обученную голову mention-ranking (wl-coref / baseline RuCoCo на ruRoBERTa-large)
+  для качества уровня SOTA.
 
 ---
 
@@ -56,8 +87,8 @@
 | Тестирование | pytest | ✅ Настроено |
 | Линтер | ruff | ✅ Настроено |
 | Типизация | mypy | ✅ Настроено |
-| Эмбеддинги | - | 📋 Планируется |
-| Deep Learning | - | 📋 Планируется (BERT) |
+| Эмбеддинги | RuBERT (ai-forever/ruBert-base) | ✅ Используется (кореференция) |
+| Deep Learning | PyTorch + Transformers | ✅ Используется (RuBertResolver) |
 
 ---
 
@@ -199,8 +230,8 @@ regulation2graph/
 ### 7. Тесты (`tests/`)
 - Unit-тесты для Triplet и RuleBasedExtractor
 - Тесты для GraphVisualizer с логикой ветвления
-- Тесты для модуля кореференции (23 теста)
-- **111 тестов**, все проходят
+- Тесты для модуля кореференции (28 тестов, включая RuBERT)
+- **116 тестов**, все проходят
 
 ### 8. Benchmark с метриками (`tests/benchmarks/benchmark_metrics.py`)
 - **Ground truth:** 25 размеченных примеров в `data/annotated/regulations.jsonl`
@@ -228,8 +259,13 @@ regulation2graph/
 **Запуск:**
 ```bash
 python -m tests.benchmarks.benchmark_metrics                  # Без кореференции
-python -m tests.benchmarks.benchmark_metrics --coref          # С кореференцией
-python -m tests.benchmarks.benchmark_metrics --coref --report # + markdown отчёт
+python -m tests.benchmarks.benchmark_metrics --coref          # Кореференция (rules)
+python -m tests.benchmarks.benchmark_metrics --rubert         # Кореференция (RuBERT)
+python -m tests.benchmarks.benchmark_metrics --rubert --report # + markdown отчёт
+
+# RuBERT требует установки доп. зависимостей и (на этой машине) отключения hf-xet:
+#   pip install -e ".[coref]"
+#   HF_HUB_DISABLE_XET=1 python -m tests.benchmarks.benchmark_metrics --rubert
 ```
 
 ---
